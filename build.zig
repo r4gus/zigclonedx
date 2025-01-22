@@ -575,7 +575,28 @@ fn generateToolFromOwn(
 }
 
 pub fn build(b: *std.Build) !void {
-    _ = b;
+    var bom = try CycloneDX.new(b.allocator);
+    defer bom.deinit(b.allocator);
+
+    const main_component = try generateToolFromOwn(b.allocator);
+
+    bom.metadata = .{
+        .component = main_component,
+    };
+
+    const bom_string = try bom.toJson(b.allocator);
+    defer b.allocator.free(bom_string);
+
+    //std.debug.print("{s}\n", .{bom_string});
+
+    var root_dir = try std.fs.openDirAbsolute(b.build_root.path.?, .{});
+    defer root_dir.close();
+    var bom_json = try root_dir.createFile("bom.json", .{
+        .truncate = true,
+    });
+    defer bom_json.close();
+
+    try bom_json.writer().writeAll(bom_string);
 }
 
 // UUID

@@ -1,0 +1,21 @@
+{
+  "bomFormat": "CycloneDX",
+  "specVersion": "1.6",
+  "serialNumber": "urn:uuid:db8815a4-05f7-45ec-bcf2-efacb3eae700",
+  "version": 1,
+  "metadata": {
+    "component": {
+      "type": "library",
+      "name": "zigclonedx",
+      "version": "0.1.0-alpha",
+      "description": "Generate CycloneDX SBOMs for your Zig projects.",
+      "externalReferences": [
+        {
+          "url": "https://github.com/r4gus/zigclonedx",
+          "comment": "CycloneDX SBOM generator for Zig.",
+          "type": "vcs"
+        }
+      ]
+    }
+  }
+}
