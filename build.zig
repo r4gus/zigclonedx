@@ -145,6 +145,24 @@ pub const CycloneDX = struct {
                 @"rfc-9116",
                 other,
             };
+
+            pub fn deinit(self: *const @This(), allocator: Allocator) void {
+                allocator.free(self.url);
+                if (self.comment) |d| allocator.free(d);
+            }
+
+            pub fn clone(self: *const @This(), allocator: Allocator) !@This() {
+                const url = try allocator.dupe(u8, self.url);
+                errdefer allocator.free(url);
+                const comment = if (self.comment) |br| try allocator.dupe(u8, br) else null;
+                errdefer if (comment) |br| allocator.free(br);
+
+                return .{
+                    .url = url,
+                    .comment = comment,
+                    .type = self.type,
+                };
+            }
         };
 
         /// Specifies the type of component. For software components, classify
@@ -362,6 +380,19 @@ pub const CycloneDX = struct {
             try authors.append(author);
             self.authors = try authors.toOwnedSlice();
         }
+
+        pub fn addExternalReference(self: *@This(), reference: Reference, allocator: Allocator) !void {
+            var references = if (self.externalReferences) |references|
+                std.ArrayList(Reference).fromOwnedSlice(allocator, references)
+            else
+                std.ArrayList(Reference).init(allocator);
+            try references.append(reference);
+            self.externalReferences = references.toOwnedSlice() catch blk: {
+                for (references.items) |ref| ref.deinit(allocator);
+                references.deinit();
+                break :blk null;
+            };
+        }
     };
 
     pub fn new(allocator: Allocator) !@This() {
@@ -533,6 +564,12 @@ fn generateToolFromOwn(
     var comp = try CycloneDX.Component.new(.library, NAME, allocator);
     try comp.setDescription("Generate CycloneDX SBOMs for your Zig projects.", allocator);
     try comp.setVersion(VERSION, allocator);
+
+    try comp.addExternalReference(.{
+        .url = "https://github.com/r4gus/zigclonedx",
+        .comment = "CycloneDX SBOM generator for Zig.",
+        .type = .vcs,
+    }, allocator);
 
     return comp;
 }
