@@ -23,14 +23,60 @@ pub const CycloneDX = struct {
     /// BOM. The default version is '1'.
     version: usize = 1,
     /// Provides additional information about a BOM.
-    metadata: ?struct {
+    metadata: struct {
         tools: ?[]const Component = null,
         component: ?Component = null,
 
         pub fn deinit(self: *const @This(), allocator: Allocator) void {
             if (self.component) |component| component.deinit(allocator);
         }
-    } = null,
+
+        pub fn addComponent(
+            self: *@This(),
+            component: Component,
+            allocator: Allocator,
+        ) !void {
+            if (self.component) |comp| comp.deinit(allocator);
+
+            self.component = component;
+
+            var parent: *CycloneDX = @fieldParentPtr("metadata", self);
+
+            if (self.component.?.@"bom-ref") |ref| {
+                try parent.addDependency(.{
+                    .ref = try allocator.dupe(u8, ref),
+                }, allocator);
+            }
+        }
+    } = .{},
+    /// A list of software and hardware components.
+    components: ?[]Component = null,
+    /// Provides the ability to document dependency relationships including
+    /// provided & implemented components.
+    dependencies: ?[]Dependency = null,
+
+    pub const Dependency = struct {
+        /// References a component or service by its bom-ref attribute.
+        ref: []const u8,
+        /// The bom-ref identifiers of the components or services that are
+        /// dependencies of this dependency object.
+        dependsOn: ?[][]const u8 = null,
+        provides: ?[][]const u8 = null,
+
+        pub fn deinit(self: *const @This(), allocator: Allocator) void {
+            allocator.free(self.ref);
+
+            if (self.dependsOn) |deps| {
+                for (deps) |dep| allocator.free(dep);
+                allocator.free(deps);
+            }
+
+            if (self.provides) |provisions| {
+                for (provisions) |obj| allocator.free(obj);
+                allocator.free(provisions);
+            }
+        }
+    };
 
     pub const Component = struct {
         /// Specifies the type of component.
@@ -413,7 +459,19 @@ pub const CycloneDX = struct {
     }
 
     pub fn deinit(self: *@This(), allocator: Allocator) void {
-        if (self.metadata) |metadata| metadata.deinit(allocator);
+        self.metadata.deinit(allocator);
+
+        if (self.components) |comps| {
+            for (comps) |comp| comp.deinit(allocator);
+            allocator.free(comps);
+        }
+        self.components = null;
+
+        if (self.dependencies) |dependencies| {
+            for (dependencies) |dependency| dependency.deinit(allocator);
+            allocator.free(dependencies);
+        }
+        self.dependencies = null;
     }
 
     pub fn toJson(self: *@This(), allocator: Allocator) ![]u8 {
@@ -503,6 +561,12 @@ pub const CycloneDX = struct {
                 kv.value_ptr.*,
                 options.allocator,
             ));
+
+            try bom.addDependenciesFromModule(
+                main_component.@"bom-ref".?,
+                kv.value_ptr.*,
+                options.allocator,
+            );
         }
         main_component.setComponents(try modules.toOwnedSlice());
 
@@ -520,11 +584,62 @@ pub const CycloneDX = struct {
         }
 
         bom.metadata = .{
-            .component = main_component,
             .tools = try tools.toOwnedSlice(),
         };
+        try bom.metadata.addComponent(main_component, options.allocator);
+
+        try bom.addDependency(.{
+            .ref = try options.allocator.dupe(u8, main_component.@"bom-ref".?),
+        }, options.allocator);
 
         return bom;
+    }
+
+    pub fn addDependency(
+        self: *@This(),
+        dependency: Dependency,
+        allocator: Allocator,
+    ) !void {
+        var dependencies = if (self.dependencies) |deps| std.ArrayList(Dependency).fromOwnedSlice(allocator, deps) else std.ArrayList(Dependency).init(allocator);
+
+        for (dependencies.items) |dep| {
+            // We don't add the same dependency twice
+            if (std.mem.eql(u8, dep.ref, dependency.ref)) {
+                self.dependencies = try dependencies.toOwnedSlice();
+                return;
+            }
+        }
+
+        try dependencies.append(dependency);
+
+        self.dependencies = try dependencies.toOwnedSlice();
+    }
+
+    pub fn addComponent(
+        self: *@This(),
+        comp: Component,
+        allocator: Allocator,
+    ) !void {
+        var components = if (self.components) |comps| std.ArrayList(Component).fromOwnedSlice(allocator, comps) else std.ArrayList(Component).init(allocator);
+
+        try components.append(comp);
+
+        self.components = try components.toOwnedSlice();
+    }
+
+    pub fn getComponentByRef(
+        self: *const @This(),
+        ref: []const u8,
+    ) ?*Component {
+        if (self.components == null) return null;
+
+        for (self.components.?) |*comp| {
+            if (comp.@"bom-ref") |ref2| {
+                if (std.mem.eql(u8, ref2, ref)) return comp;
+            }
+        }
+
+        return null;
     }
 
     pub fn fromCompileStep(
@@ -556,6 +671,58 @@ pub const CycloneDX = struct {
 
         return bom;
     }
+
+    pub fn addDependenciesFromModule(
+        self: *@This(),
+        @"bom-ref": []const u8,
+        mod: *std.Build.Module,
+        allocator: Allocator,
+    ) !void {
+        _ = @"bom-ref";
+
+        var iter = mod.iterateDependencies(
+            null,
+            true,
+        );
+        while (iter.next()) |dep| {
+            var component = try Component.new(
+                .library,
+                dep.name,
+                allocator,
+            );
+            errdefer component.deinit(allocator);
+
+            if (dep.compile) |compile| {
+                if (compile.version) |v| {
+                    const v_ = try std.fmt.allocPrint(
+                        allocator,
+                        "{d}.{d}.{d}",
+                        .{ v.major, v.minor, v.patch },
+                    );
+                    defer allocator.free(v_);
+                    try component.setVersion(v_, allocator);
+                }
+            }
+
+            try component.generateBomRef(&.{}, allocator);
+
+            // Check if we already came across the component and if so, skip
+            // further processing.
+            if (self.getComponentByRef(component.@"bom-ref".?) != null) {
+                component.deinit(allocator);
+                continue;
+            }
+
+            try self.addComponent(component, allocator);
+
+            // Crashes ... probably due to circular dependencies
+            try self.addDependenciesFromModule(
+                component.@"bom-ref".?,
+                dep.module,
+                allocator,
+            );
+        }
+    }
 };
 
 fn generateToolFromOwn(
@@ -564,6 +731,8 @@ fn generateToolFromOwn(
     var comp = try CycloneDX.Component.new(.library, NAME, allocator);
     try comp.setDescription("Generate CycloneDX SBOMs for your Zig projects.", allocator);
     try comp.setVersion(VERSION, allocator);
+    try comp.setGroup("zigclonedx", allocator);
+    try comp.generateBomRef(&.{}, allocator);
 
     try comp.addExternalReference(.{
         .url = "https://github.com/r4gus/zigclonedx",
@@ -580,9 +749,7 @@ pub fn build(b: *std.Build) !void {
 
     const main_component = try generateToolFromOwn(b.allocator);
 
-    bom.metadata = .{
-        .component = main_component,
-    };
+    try bom.metadata.addComponent(main_component, b.allocator);
 
     const bom_string = try bom.toJson(b.allocator);
     defer b.allocator.free(bom_string);

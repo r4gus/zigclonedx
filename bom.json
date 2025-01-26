@@ -1,11 +1,13 @@
 {
   "bomFormat": "CycloneDX",
   "specVersion": "1.6",
-  "serialNumber": "urn:uuid:db8815a4-05f7-45ec-bcf2-efacb3eae700",
+  "serialNumber": "urn:uuid:e94006dd-8aed-4c76-b4a5-d8c0ee0a10c1",
   "version": 1,
   "metadata": {
     "component": {
       "type": "library",
+      "bom-ref": "zigclonedx/zigclonedx-0.1.0-alpha",
+      "group": "zigclonedx",
       "name": "zigclonedx",
       "version": "0.1.0-alpha",
       "description": "Generate CycloneDX SBOMs for your Zig projects.",
@@ -17,5 +19,10 @@
         }
       ]
     }
-  }
+  },
+  "dependencies": [
+    {
+      "ref": "zigclonedx/zigclonedx-0.1.0-alpha"
+    }
+  ]
 }
